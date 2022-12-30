@@ -26,6 +26,7 @@ const uws = @import("bun").uws;
 const Body = WebCore.Body;
 const TaggedPointerTypes = @import("../tagged_pointer.zig");
 const TaggedPointerUnion = TaggedPointerTypes.TaggedPointerUnion;
+const BasicSocket = @import("../io/socket.zig").Socket;
 
 pub const ExceptionValueRef = [*c]js.JSValueRef;
 pub const JSValueRef = js.JSValueRef;
@@ -3243,7 +3244,7 @@ const KQueueGenerationNumber = if (Environment.isMac and Environment.allow_asser
 pub const FilePoll = struct {
     var max_generation_number: KQueueGenerationNumber = 0;
 
-    fd: u32 = invalid_fd,
+    fd: bun.FileDescriptor = invalid_fd,
     flags: Flags.Set = Flags.Set{},
     owner: Owner = undefined,
 
@@ -3270,6 +3271,7 @@ pub const FilePoll = struct {
         Subprocess,
         BufferedInput,
         FIFO,
+        BasicSocket,
         Deactivated,
     });
 
@@ -3369,6 +3371,11 @@ pub const FilePoll = struct {
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {d}) FileSink", .{poll.fd});
                 var loader = ptr.as(JSC.WebCore.FileSink);
                 loader.onPoll(size_or_offset, 0);
+            },
+            @field(Owner.Tag, "Socket") => {
+                log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {d}) Socket", .{poll.fd});
+                var loader = ptr.as(BasicSocket);
+                loader.onPoll();
             },
 
             else => {
@@ -3526,7 +3533,7 @@ pub const FilePoll = struct {
 
     pub fn initWithOwner(vm: *JSC.VirtualMachine, fd: bun.FileDescriptor, flags: Flags.Struct, owner: Owner) *FilePoll {
         var poll = vm.rareData().filePolls(vm).get();
-        poll.fd = @intCast(u32, fd);
+        poll.fd = fd;
         poll.flags = Flags.Set.init(flags);
         poll.owner = owner;
         if (KQueueGenerationNumber != u0) {

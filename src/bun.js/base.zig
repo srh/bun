@@ -3238,6 +3238,14 @@ pub const PollRef = struct {
         vm.uws_event_loop.?.num_polls += 1;
         vm.uws_event_loop.?.active += 1;
     }
+
+    pub fn setRefOrUnref(this: *PollRef, vm: *JSC.VirtualMachine, value: bool) void {
+        if (value) {
+            this.ref(vm);
+        } else {
+            this.unref(vm);
+        }
+    }
 };
 
 const KQueueGenerationNumber = if (Environment.isMac and Environment.allow_assert) usize else u0;

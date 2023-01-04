@@ -48,6 +48,7 @@ const Response = JSC.WebCore.Response;
 const Request = JSC.WebCore.Request;
 const assert = std.debug.assert;
 const Syscall = JSC.Node.Syscall;
+const IoSocket = @import("../../io/socket.zig").Socket;
 
 const AnyBlob = JSC.WebCore.AnyBlob;
 pub const ReadableStream = struct {
@@ -3496,6 +3497,57 @@ pub const AutoSizer = struct {
     }
 };
 
+pub const SocketReader = struct {
+    sock: IoSocket,
+    poll_ref: JSC.PollRef,
+    pending_: StreamResult.Pending,
+
+    pub fn init(this: *SocketReader) void {
+        // TODO: Implement -- initialize IoSocket.
+        this.poll_ref = JSC.PollRef.init();
+    }
+
+    pub fn deinit(this: *SocketReader) void {
+        _ = this;
+        // TODO: Implement.
+    }
+
+    pub fn onReadComplete(thisOpaque: ?*anyopaque, res: IoSocket.InterruptedError!JSC.Maybe(usize)) void {
+        const this = bun.cast(*SocketReader, thisOpaque);
+        _ = this;
+        _ = res catch undefined;
+        // TODO: Implement.  We returned pending_.
+    }
+
+    pub fn readFromJS(this: *SocketReader, buf: []u8, view: JSValue, globalThis: *JSC.JSGlobalObject) StreamResult {
+        if (this.isClosed()) {
+            return .{ .done = {} };
+        }
+        // TODO: Handle the LogicError?
+        this.sock.read(buf, @ptrCast(*anyopaque, this), onReadComplete) catch undefined;
+
+        // TODO: Shouldn't we make use of view and globalThis?
+        _ = view;
+        _ = globalThis;
+
+        return .{ .pending = &this.pending_ };
+    }
+
+    pub fn close(this: *SocketReader) void {
+        // TODO: Implement.
+        
+        // TODO: Don't use sock.vm_.  (Make an accessor.)
+        this.poll_ref.unref(this.sock.vm_);
+    }
+
+    pub fn isClosed(this: *SocketReader) bool {
+        // How to implement?  Deinit sock i.e. make it hold an ?IoSocket?
+        _ = this;
+        // TODO: Implement.
+        return true;
+    }
+};
+
 pub const FIFO = struct {
     buf: []u8 = &[_]u8{},
     view: JSC.Strong = .{},
@@ -3529,6 +3581,7 @@ pub const FIFO = struct {
 
     pub fn close(this: *FIFO) void {
         if (this.poll_ref) |poll| {
+            // TODO: Might we need to first setRefOrUnref(false) on this poll_ref?
             this.poll_ref = null;
             poll.deinit();
         }
@@ -4244,8 +4297,10 @@ pub const FileReader = struct {
     pub fn setSignal(this: *FileReader, signal: Signal) void {
         switch (this.lazy_readable) {
             .readable => {
-                if (this.lazy_readable.readable == .FIFO)
+                if (this.lazy_readable.readable == .FIFO) {
                     this.lazy_readable.readable.FIFO.signal = signal;
+                }
+                // TODO: Implement for Socket?
             },
             else => {},
         }
@@ -4258,6 +4313,7 @@ pub const FileReader = struct {
     pub const Readable = union(enum) {
         FIFO: FIFO,
         File: File,
+        Socket: SocketReader,
 
         pub const Lazy = union(enum) {
             readable: Readable,
@@ -4269,6 +4325,7 @@ pub const FileReader = struct {
                     if (this.readable == .FIFO) {
                         this.readable.FIFO.drained = true;
                     }
+                    // TODO: How do we implement this?
                 }
             }
 
@@ -4314,6 +4371,10 @@ pub const FileReader = struct {
                 .File => {
                     this.File.deinit();
                 },
+                .Socket => {
+                    this.Socket.deinit();
+                    // TODO: Check if we can even do this -- we may have pending async stuff.
+                }
             }
         }
 
@@ -4325,6 +4386,9 @@ pub const FileReader = struct {
                 .File => {
                     return this.File.isClosed();
                 },
+                .Socket => {
+                    return this.Socket.isClosed();
+                }
             }
         }
 
@@ -4341,6 +4405,9 @@ pub const FileReader = struct {
 
                     this.File.close();
                 },
+                .Socket => {
+                    this.Socket.close();
+                }
             }
         }
 
@@ -4353,15 +4420,15 @@ pub const FileReader = struct {
             return switch (std.meta.activeTag(this.*)) {
                 .FIFO => this.FIFO.readFromJS(read_buf, view, global),
                 .File => this.File.readFromJS(read_buf, view, global),
+                .Socket => this.Socket.readFromJS(read_buf, view, global),
             };
         }
 
         pub fn isSeekable(this: Readable) bool {
-            if (this == .File) {
-                return this.File.isSeekable();
-            }
-
-            return false;
+            return switch (this.*) {
+                .FIFO, .Socket => false,
+                .File => this.File.isSeekable(),
+            };
         }
 
         // pub fn watch(this: *Readable) void {
@@ -4502,11 +4569,11 @@ pub const FileReader = struct {
                     }
                 },
                 .File => {
-                    if (value)
-                        this.lazy_readable.readable.File.poll_ref.ref(JSC.VirtualMachine.get())
-                    else
-                        this.lazy_readable.readable.File.poll_ref.unref(JSC.VirtualMachine.get());
+                    this.lazy_readable.readable.File.poll_ref.setRefOrUnref(JSC.VirtualMachine.get(), value);
                 },
+                .Socket => {
+                    this.lazy_readable.readable.Socket.poll_ref.setRefOrUnref(JSC.VirtualMachine.get(), value);
+                }
             }
         }
     }

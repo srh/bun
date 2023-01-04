@@ -55,21 +55,43 @@ pub const Socket = struct {
     }
 
     pub fn deinit(this: *Socket) void {
-        const fd: bun.FileDescriptor = this.poll_.?.fd;
-        this.poll_.?.deinit();
-        if (fd != bun.invalid_fd) {
-            _ = Syscall.close(fd);
+        if (this.poll_ == null) {
+            return;
         }
+        const fd: bun.FileDescriptor = this.poll_.?.fd;
+        // Note that deinit() invalidates the pointer.
+        this.poll_.?.deinit();
+        this.poll_ = null;
+        _ = Syscall.close(fd);
 
         if (this.read_cb_ != null or this.write_cb_ != null) {
-            // We might call interruptRead and/or interruptWrite instead.
-            // But for now, AnyTask usage doesn't take ownership of the ctx/cb pointer
-            // pair; the callee has to clean it up -- and the correct fix would not be to add
-            // allocations necessary to interrupt the read with InterruptedError or LogicError,
-            // but rather to make the event loop hold both values of the AnyTask instead of
-            // using a TaggedPointerUnion.
+            // We can't interrupt the reads or writes because the object gets invalidated.
+            // The caller should know if it has pending reads or writes.
             std.debug.panic("Socket deinitted while pending callbacks exist", .{});
         }
+    }
+
+    pub fn interruptAndClose(this: *Socket) void {
+        if (this.poll_ == null) {
+            std.debug.panic("Tried to close a Socket that is already closed", .{});
+            return;
+        }
+        const fd: bun.FileDescriptor = this.poll_.?.fd;
+
+        // TODO: Consider this question.  Currently the function is named interruptAndClose beacuse it interrupts pending operations.
+        // Maybe, we should say this can't be called if there are pending reads and writes.  The caller should know if it has pending operations.
+        // But for now, we just interrupt any pending operations.
+        this.interruptRead();
+        this.interruptWrite();
+
+        // Note that deinit() invalidates the pointer.
+        this.poll_.?.deinit();
+        this.poll_ = null;
+        _ = Syscall.close(fd);
+    }
+
+    pub fn isClosed(this: *Socket) bool {
+        return this.poll_ == null;
     }
 
     pub fn vm(this: *const Socket) *bun.JSC.VirtualMachine {
@@ -177,40 +199,3 @@ pub const Socket = struct {
 
 };
 
-// TODO: The function testSocket is just to sanity-check compilation.
-
-fn testSocket_cb(_: ?*anyopaque, _: Socket.InterruptedError!JSC.Maybe(usize)) void { return {}; }
-
-
-pub fn testSocket(vm: *JSC.VirtualMachine) void {
-    if (comptime Environment.isLinux) {
-        const Random = std.rand.DefaultPrng;
-        var rnd = Random.init(0);
-        var some_random_num = rnd.random().int(i32);
-        if (some_random_num != 0) {
-            // We don't actually want to run this code.
-            return;
-        }
-
-        const protocol: i32 = 0;
-        var fds: [2]i32 = .{-1, -1};
-        const res: usize = std.os.linux.socketpair(std.os.linux.AF.UNIX, std.os.linux.SOCK.STREAM | std.os.linux.SOCK.CLOEXEC,
-            protocol, &fds);
-        std.debug.assert(std.os.linux.E.SUCCESS == std.os.linux.getErrno(res));
-        
-        var sock0: Socket = undefined;
-        _ = sock0.init(vm, fds[0]);
-        var sock1: Socket = undefined;
-        _ = sock1.init(vm, fds[1]);
-        sock0.deinit();
-        sock1.deinit();
-        var ctx_target: i32 = 0;
-        var buf: [5]u8 = undefined;
-        sock0.read(&buf, @ptrCast(*anyopaque, &ctx_target), &testSocket_cb) catch {};
-        sock0.interruptRead();
-        sock1.write(&buf, @ptrCast(*anyopaque, &ctx_target), &testSocket_cb) catch {};
-        sock1.interruptWrite();
-        std.debug.print("Exercising testSocket", .{});
-
-    }
-}

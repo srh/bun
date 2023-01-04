@@ -31,7 +31,6 @@ const which = @import("which.zig").which;
 const JSC = @import("bun").JSC;
 const AsyncHTTP = @import("bun").HTTP.AsyncHTTP;
 const Arena = @import("./mimalloc_arena.zig").Arena;
-const testSocket = @import("./io/socket.zig").testSocket;
 
 const OpaqueWrap = JSC.OpaqueWrap;
 const VirtualMachine = JSC.VirtualMachine;
@@ -141,7 +140,6 @@ pub const Run = struct {
             Global.exit(1);
         }
 
-        testSocket(this.vm);  // TODO
         _ = promise.result(this.vm.global.vm());
 
         if (this.vm.log.msgs.items.len > 0) {

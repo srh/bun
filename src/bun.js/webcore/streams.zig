@@ -4272,14 +4272,14 @@ pub const FileReader = struct {
                 }
             }
 
-            pub fn finish(this: *Lazy) void {
-                switch (this.readable) {
-                    .FIFO => {
-                        this.readable.FIFO.finish();
-                    },
-                    .File => {},
-                }
-            }
+            // pub fn finish(this: *Lazy) void {
+            //     switch (this.readable) {
+            //         .FIFO => {
+            //             this.readable.FIFO.finish();
+            //         },
+            //         .File => {},
+            //     }
+            // }
 
             pub fn isClosed(this: *Lazy) bool {
                 switch (this.*) {
@@ -4364,14 +4364,14 @@ pub const FileReader = struct {
             return false;
         }
 
-        pub fn watch(this: *Readable) void {
-            switch (this.*) {
-                .FIFO => {
-                    if (!this.FIFO.isWatching())
-                        this.FIFO.watch(this.FIFO.fd);
-                },
-            }
-        }
+        // pub fn watch(this: *Readable) void {
+        //     switch (this.*) {
+        //         .FIFO => {
+        //             if (!this.FIFO.isWatching())
+        //                 this.FIFO.watch(this.FIFO.fd);
+        //         },
+        //     }
+        // }
     };
 
     pub inline fn globalThis(this: *FileReader) *JSC.JSGlobalObject {

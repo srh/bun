@@ -3501,50 +3501,94 @@ pub const SocketReader = struct {
     sock: IoSocket,
     poll_ref: JSC.PollRef,
     pending_: StreamResult.Pending,
+    view_: JSC.Strong,
 
-    pub fn init(this: *SocketReader) void {
-        // TODO: Implement -- initialize IoSocket.
+    pub fn init(this: *SocketReader, vm: *JSC.VirtualMachine, fd: bun.FileDescriptor) void {
+        const res = this.sock.init(vm, fd);
+        switch (res) {
+            .err => |err| {
+                bun.unreachablePanic("FilePoll.register failed: {d}", .{err.errno});
+            },
+            .result => {},
+        }
         this.poll_ref = JSC.PollRef.init();
     }
 
     pub fn deinit(this: *SocketReader) void {
-        _ = this;
-        // TODO: Implement.
+        // We check isClosed() because I'm fairly confident deinit can be called multiple times.
+        if (this.sock.isClosed()) {
+            return;
+        }
+        // TODO: I'm skeptical -- could this be called if we have pending operations?  Or does view_
+        // holding a reference to.. something, prevent that?  What about FileReader.finalize?
+
+        // With FIFO, the FileReader calls .close().  But it doesn't have pending operations it needs to interrupt.
+        this.sock.deinit();
+        this.poll_ref.unref(this.sock.vm());
     }
 
     pub fn onReadComplete(thisOpaque: ?*anyopaque, res: IoSocket.InterruptedError!JSC.Maybe(usize)) void {
         const this = bun.cast(*SocketReader, thisOpaque);
-        _ = this;
-        _ = res catch undefined;
-        // TODO: Implement.  We returned pending_.
+        const mb: JSC.Maybe(usize) = res catch {
+            // This .done result behaves the same as close() behavior from FIFO (we call interruptAndClose
+            // in SocketReader.close() to trigger this InterruptedError).
+            this.pending_.result = StreamResult{ .done = {} };
+            this.pending_.run();
+            return;
+        };
+
+        switch (mb) {
+            .err => |e| {
+                this.pending_.result = StreamResult{ .err = e };
+                this.pending_.run();
+                return;
+            },
+            .result => |count| {
+                if (count == 0) {
+                    // End of stream.
+                    this.pending_.result = StreamResult{ .done = {} };
+                    this.pending_.run();
+                    return;
+                } else {
+                    // orelse .zero null-squashing taken from FIFO.ready
+                    const view: JSValue = this.view_.get() orelse .zero;
+                    this.pending_.result = StreamResult{ .into_array = .{ .len = @truncate(Blob.SizeType, count), .value = view } };
+                    this.pending_.run();
+                    return;
+                }
+            }
+        }
     }
 
     pub fn readFromJS(this: *SocketReader, buf: []u8, view: JSValue, globalThis: *JSC.JSGlobalObject) StreamResult {
+        // TODO: Can two readFromJS calls happen concurrently?  They'd try to reuse pending_.  Question may also apply to FIFO.
         if (this.isClosed()) {
             return .{ .done = {} };
         }
         // TODO: Handle the LogicError?
-        this.sock.read(buf, @ptrCast(*anyopaque, this), onReadComplete) catch undefined;
+        this.sock.read(buf, @ptrCast(*anyopaque, this), onReadComplete) catch {};
 
-        // TODO: Shouldn't we make use of view and globalThis?
-        _ = view;
-        _ = globalThis;
+        // TODO: If we don't handle the LogicError, this may be a different view value.
+        this.view_.set(globalThis, view);
 
+        // TODO: Should we check if the state is already pending (equivalent to handling the above LogicError?  Then what?
+        this.pending_.state = .pending;
         return .{ .pending = &this.pending_ };
     }
 
     pub fn close(this: *SocketReader) void {
-        // TODO: Implement.
-        
-        // TODO: Don't use sock.vm_.  (Make an accessor.)
-        this.poll_ref.unref(this.sock.vm_);
+        // FIFO.close quietly supports being called twice, and this implementation blindly copies that.
+        if (this.sock.isClosed()) {
+            return;
+        }
+        // This triggers .pending_ in onReadComplete's InterruptedError handler,
+        // consistent with FIFO (and reasonable) behavior.
+        this.sock.interruptAndClose();
+        this.poll_ref.unref(this.sock.vm());
     }
 
     pub fn isClosed(this: *SocketReader) bool {
-        // How to implement?  Deinit sock i.e. make it hold an ?IoSocket?
-        _ = this;
-        // TODO: Implement.
-        return true;
+        return this.sock.isClosed();
     }
 };
 
@@ -4373,7 +4417,6 @@ pub const FileReader = struct {
                 },
                 .Socket => {
                     this.Socket.deinit();
-                    // TODO: Check if we can even do this -- we may have pending async stuff.
                 }
             }
         }

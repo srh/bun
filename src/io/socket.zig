@@ -26,27 +26,27 @@ pub const Socket = struct {
     write_ctx_: ?*anyopaque = null,
     write_interrupted_: bool = false,
 
-    const LogicError = error {
+    pub const LogicError = error {
         LogicError,
     };
-    const InterruptedError = error {
+    pub const InterruptedError = error {
         InterruptedError,
     };
 
-    pub fn init(this: *Socket, vm: *JSC.VirtualMachine, fd: bun.FileDescriptor) JSC.Maybe(void) {
+    pub fn init(this: *Socket, vm_: *JSC.VirtualMachine, fd: bun.FileDescriptor) JSC.Maybe(void) {
         std.debug.assert(fd != bun.invalid_fd);
-        this.vm_ = vm;
+        this.vm_ = vm_;
         const flags: base.FilePoll.Flags.Struct = .{};
-        this.poll_ = base.FilePoll.init(vm, fd, flags, Socket, this);
+        this.poll_ = base.FilePoll.init(vm_, fd, flags, Socket, this);
         // TODO: We should be able to register both readable and writable flags in one system call.
         const res: JSC.Maybe(void)
-            = this.poll_.?.register(vm.uws_event_loop.?, base.FilePoll.Flags.readable, false);
+            = this.poll_.?.register(vm_.uws_event_loop.?, base.FilePoll.Flags.readable, false);
         switch (res) {
             .err => { return res; },
             else => { },
         }
         const res2: JSC.Maybe(void)
-            = this.poll_.?.register(vm.uws_event_loop.?, base.FilePoll.Flags.writable, false);
+            = this.poll_.?.register(vm_.uws_event_loop.?, base.FilePoll.Flags.writable, false);
         switch (res2) {
             .err => { return res2; },
             else => { },
@@ -70,6 +70,10 @@ pub const Socket = struct {
             // using a TaggedPointerUnion.
             std.debug.panic("Socket deinitted while pending callbacks exist", .{});
         }
+    }
+
+    pub fn vm(this: *const Socket) *bun.JSC.VirtualMachine {
+        return this.vm_;
     }
 
     pub fn onPoll(this: *Socket) void {

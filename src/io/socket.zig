@@ -54,40 +54,39 @@ pub const Socket = struct {
         return .{.result = {}};
     }
 
+    // Leaves Socket in isClosed() == true state, and SocketReader.deinit depends on this.
     pub fn deinit(this: *Socket) void {
         if (this.poll_ == null) {
             return;
         }
-        const fd: bun.FileDescriptor = this.poll_.?.fd;
-        // Note that deinit() invalidates the pointer.
-        this.poll_.?.deinit();
-        this.poll_ = null;
-        _ = Syscall.close(fd);
-
-        if (this.read_cb_ != null or this.write_cb_ != null) {
-            // We can't interrupt the reads or writes because the object gets invalidated.
-            // The caller should know if it has pending reads or writes.
-            std.debug.panic("Socket deinitted while pending callbacks exist", .{});
-        }
+        _ = this.helpClose();
     }
 
-    pub fn interruptAndClose(this: *Socket) void {
+    pub fn close(this: *Socket) void {
         if (this.poll_ == null) {
             std.debug.panic("Tried to close a Socket that is already closed", .{});
             return;
         }
-        const fd: bun.FileDescriptor = this.poll_.?.fd;
 
-        // TODO: Consider this question.  Currently the function is named interruptAndClose beacuse it interrupts pending operations.
-        // Maybe, we should say this can't be called if there are pending reads and writes.  The caller should know if it has pending operations.
-        // But for now, we just interrupt any pending operations.
-        this.interruptRead();
-        this.interruptWrite();
+        // TODO: Return this so the caller can ignore it?
+        _ = this.helpClose();
+    }
+
+    fn helpClose(this: *Socket) ?Syscall.Error {
+        if (this.read_cb_ != null or this.write_cb_ != null) {
+            // In the deinit case, we can't interrupt reads or writes because the object
+            // gets invalidated.  In the close case, we could call interruptRead or interruptWrite,
+            // but (somewhat arbitrarily and curmudgeonly) we don't -- the caller "should" know it has pending
+            // operations and clean them up itself, first.
+            std.debug.panic("Socket closed while pending callbacks exist", .{});
+        }
+
+        const fd: bun.FileDescriptor = this.poll_.?.fd;
 
         // Note that deinit() invalidates the pointer.
         this.poll_.?.deinit();
         this.poll_ = null;
-        _ = Syscall.close(fd);
+        return Syscall.close(fd);
     }
 
     pub fn isClosed(this: *Socket) bool {
@@ -129,6 +128,32 @@ pub const Socket = struct {
                 this.vm_.enqueueTask(JSC.Task.init(&this.write_task_));
             }
         }
+    }
+
+    // Interrupts _and_ abandons any pending read callback.  The callback won't get called!
+    // Returns true if there was a pending read to abandon.
+    pub fn interruptAndAbandonRead(this: *Socket) bool {
+        if (this.read_cb_ != null) {
+            this.read_cb_ = null;
+            this.read_ctx_ = null;
+            this.read_buf_ = null;
+            this.read_interrupted_ = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Interrupts _and_ abandons any pending write callback.  The callback won't get called!
+    // Returns true if there was a pending write to abandon.
+    pub fn interruptAndAbandonWrite(this: *Socket) bool {
+        if (this.write_cb_ != null) {
+            this.write_cb_ = null;
+            this.write_ctx_ = null;
+            this.write_buf_ = null;
+            this.write_interrupted_ = false;
+            return true;
+        }
+        return false;
     }
 
     pub fn read(this: *Socket, buf: []u8, ctx: *anyopaque,

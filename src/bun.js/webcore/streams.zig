@@ -3511,6 +3511,7 @@ pub const SocketReader = struct {
             },
             .result => {},
         }
+        // TODO: Isn't this redundant with FilePoll.register/unregister in this.sock.init?  What does setRefOrUnref accomplish?
         this.poll_ref = JSC.PollRef.init();
     }
 
@@ -3519,23 +3520,23 @@ pub const SocketReader = struct {
         if (this.sock.isClosed()) {
             return;
         }
-        // TODO: I'm skeptical -- could this be called if we have pending operations?  Or does view_
-        // holding a reference to.. something, prevent that?  What about FileReader.finalize?
+
+        const abandoned: bool = this.sock.interruptAndAbandonRead();
 
         // With FIFO, the FileReader calls .close().  But it doesn't have pending operations it needs to interrupt.
         this.sock.deinit();
         this.poll_ref.unref(this.sock.vm());
+
+        if (abandoned) {
+            // copying FIFO behavior
+            this.pending_.result = StreamResult{ .done = {} };
+            this.pending_.run();
+        }
     }
 
     pub fn onReadComplete(thisOpaque: ?*anyopaque, res: IoSocket.InterruptedError!JSC.Maybe(usize)) void {
         const this = bun.cast(*SocketReader, thisOpaque);
-        const mb: JSC.Maybe(usize) = res catch {
-            // This .done result behaves the same as close() behavior from FIFO (we call interruptAndClose
-            // in SocketReader.close() to trigger this InterruptedError).
-            this.pending_.result = StreamResult{ .done = {} };
-            this.pending_.run();
-            return;
-        };
+        const mb: JSC.Maybe(usize) = res catch std.debug.panic("Unreachable InterruptedError on Socket", .{});
 
         switch (mb) {
             .err => |e| {
@@ -3581,10 +3582,13 @@ pub const SocketReader = struct {
         if (this.sock.isClosed()) {
             return;
         }
-        // This triggers .pending_ in onReadComplete's InterruptedError handler,
-        // consistent with FIFO (and reasonable) behavior.
-        this.sock.interruptAndClose();
+        const abandoned = this.sock.interruptAndAbandonRead();
+        this.sock.close();
         this.poll_ref.unref(this.sock.vm());
+        if (abandoned) {
+            this.pending_.result = StreamResult{ .done = {} };
+            this.pending_.run();
+        }
     }
 
     pub fn isClosed(this: *SocketReader) bool {
